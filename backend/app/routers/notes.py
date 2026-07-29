@@ -1,34 +1,40 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import asc, desc, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import Note
 from ..schemas import NoteCreate, NotePatch, NoteRead
+from ..sorting import resolve_sort
 
 router = APIRouter(prefix="/notes", tags=["notes"])
+
+SORTABLE_FIELDS = {
+    "id": Note.id,
+    "title": Note.title,
+    "created_at": Note.created_at,
+    "updated_at": Note.updated_at,
+}
 
 
 @router.get("/", response_model=list[NoteRead])
 def list_notes(
     db: Session = Depends(get_db),
     q: Optional[str] = None,
-    skip: int = 0,
-    limit: int = Query(50, le=200),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     sort: str = Query("-created_at", description="Sort by field, prefix with - for desc"),
 ) -> list[NoteRead]:
     stmt = select(Note)
     if q:
         stmt = stmt.where((Note.title.contains(q)) | (Note.content.contains(q)))
 
-    sort_field = sort.lstrip("-")
-    order_fn = desc if sort.startswith("-") else asc
-    if hasattr(Note, sort_field):
-        stmt = stmt.order_by(order_fn(getattr(Note, sort_field)))
-    else:
-        stmt = stmt.order_by(desc(Note.created_at))
+    try:
+        stmt = stmt.order_by(resolve_sort(sort, SORTABLE_FIELDS))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     rows = db.execute(stmt.offset(skip).limit(limit)).scalars().all()
     return [NoteRead.model_validate(row) for row in rows]
@@ -48,10 +54,11 @@ def patch_note(note_id: int, payload: NotePatch, db: Session = Depends(get_db)) 
     note = db.get(Note, note_id)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    if payload.title is not None:
-        note.title = payload.title
-    if payload.content is not None:
-        note.content = payload.content
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+    for field, value in updates.items():
+        setattr(note, field, value)
     db.add(note)
     db.flush()
     db.refresh(note)
@@ -64,5 +71,14 @@ def get_note(note_id: int, db: Session = Depends(get_db)) -> NoteRead:
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     return NoteRead.model_validate(note)
+
+
+@router.delete("/{note_id}", status_code=204)
+def delete_note(note_id: int, db: Session = Depends(get_db)) -> None:
+    note = db.get(Note, note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    db.delete(note)
+    db.flush()
 
 

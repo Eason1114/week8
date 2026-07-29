@@ -1,34 +1,40 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import asc, desc, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import ActionItem
 from ..schemas import ActionItemCreate, ActionItemPatch, ActionItemRead
+from ..sorting import resolve_sort
 
 router = APIRouter(prefix="/action-items", tags=["action_items"])
+
+SORTABLE_FIELDS = {
+    "id": ActionItem.id,
+    "completed": ActionItem.completed,
+    "created_at": ActionItem.created_at,
+    "updated_at": ActionItem.updated_at,
+}
 
 
 @router.get("/", response_model=list[ActionItemRead])
 def list_items(
     db: Session = Depends(get_db),
     completed: Optional[bool] = None,
-    skip: int = 0,
-    limit: int = Query(50, le=200),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     sort: str = Query("-created_at"),
 ) -> list[ActionItemRead]:
     stmt = select(ActionItem)
     if completed is not None:
         stmt = stmt.where(ActionItem.completed.is_(completed))
 
-    sort_field = sort.lstrip("-")
-    order_fn = desc if sort.startswith("-") else asc
-    if hasattr(ActionItem, sort_field):
-        stmt = stmt.order_by(order_fn(getattr(ActionItem, sort_field)))
-    else:
-        stmt = stmt.order_by(desc(ActionItem.created_at))
+    try:
+        stmt = stmt.order_by(resolve_sort(sort, SORTABLE_FIELDS))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     rows = db.execute(stmt.offset(skip).limit(limit)).scalars().all()
     return [ActionItemRead.model_validate(row) for row in rows]
@@ -55,18 +61,36 @@ def complete_item(item_id: int, db: Session = Depends(get_db)) -> ActionItemRead
     return ActionItemRead.model_validate(item)
 
 
+@router.get("/{item_id}", response_model=ActionItemRead)
+def get_item(item_id: int, db: Session = Depends(get_db)) -> ActionItemRead:
+    item = db.get(ActionItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Action item not found")
+    return ActionItemRead.model_validate(item)
+
+
 @router.patch("/{item_id}", response_model=ActionItemRead)
 def patch_item(item_id: int, payload: ActionItemPatch, db: Session = Depends(get_db)) -> ActionItemRead:
     item = db.get(ActionItem, item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Action item not found")
-    if payload.description is not None:
-        item.description = payload.description
-    if payload.completed is not None:
-        item.completed = payload.completed
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields provided to update")
+    for field, value in updates.items():
+        setattr(item, field, value)
     db.add(item)
     db.flush()
     db.refresh(item)
     return ActionItemRead.model_validate(item)
+
+
+@router.delete("/{item_id}", status_code=204)
+def delete_item(item_id: int, db: Session = Depends(get_db)) -> None:
+    item = db.get(ActionItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Action item not found")
+    db.delete(item)
+    db.flush()
 
 
