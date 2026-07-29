@@ -5,7 +5,7 @@ from sqlalchemy import asc, desc, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Note
+from ..models import Note, Tag
 from ..schemas import NoteCreate, NotePatch, NoteRead
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -15,6 +15,7 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 def list_notes(
     db: Session = Depends(get_db),
     q: Optional[str] = None,
+    tag: Optional[str] = Query(None, description="Filter to notes tagged with this tag name"),
     skip: int = 0,
     limit: int = Query(50, le=200),
     sort: str = Query("-created_at", description="Sort by field, prefix with - for desc"),
@@ -22,6 +23,8 @@ def list_notes(
     stmt = select(Note)
     if q:
         stmt = stmt.where((Note.title.contains(q)) | (Note.content.contains(q)))
+    if tag:
+        stmt = stmt.join(Note.tags).where(Tag.name == tag)
 
     sort_field = sort.lstrip("-")
     order_fn = desc if sort.startswith("-") else asc

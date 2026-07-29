@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 load_dotenv()
@@ -13,6 +13,13 @@ DEFAULT_DB_PATH = os.getenv("DATABASE_PATH", "./data/app.db")
 
 engine = create_engine(f"sqlite:///{DEFAULT_DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@event.listens_for(engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 def get_db() -> Iterator[Session]:
