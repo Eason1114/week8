@@ -23,3 +23,53 @@ def test_create_list_and_patch_notes(client):
     assert patched["title"] == "Updated"
 
 
+def test_create_note_validation_errors(client):
+    r = client.post("/notes/", json={"title": "", "content": "Hello"})
+    assert r.status_code == 422
+
+    r = client.post("/notes/", json={"title": "Test", "content": ""})
+    assert r.status_code == 422
+
+    r = client.post("/notes/", json={"title": "x" * 201, "content": "Hello"})
+    assert r.status_code == 422
+
+
+def test_patch_note_requires_a_field(client):
+    r = client.post("/notes/", json={"title": "Test", "content": "Hello"})
+    note_id = r.json()["id"]
+
+    r = client.patch(f"/notes/{note_id}", json={})
+    assert r.status_code == 400
+
+
+def test_patch_note_not_found(client):
+    r = client.patch("/notes/999999", json={"title": "Updated"})
+    assert r.status_code == 404
+
+
+def test_get_and_delete_note(client):
+    r = client.post("/notes/", json={"title": "Test", "content": "Hello"})
+    note_id = r.json()["id"]
+
+    r = client.get(f"/notes/{note_id}")
+    assert r.status_code == 200
+    assert r.json()["id"] == note_id
+
+    r = client.delete(f"/notes/{note_id}")
+    assert r.status_code == 204
+
+    r = client.get(f"/notes/{note_id}")
+    assert r.status_code == 404
+
+    r = client.delete(f"/notes/{note_id}")
+    assert r.status_code == 404
+
+
+def test_list_notes_rejects_invalid_sort_field(client):
+    r = client.get("/notes/", params={"sort": "not_a_real_field"})
+    assert r.status_code == 400
+
+    r = client.get("/notes/", params={"sort": "-title"})
+    assert r.status_code == 200
+
+
